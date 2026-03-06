@@ -36,3 +36,10 @@ GENERATE_XML           = YES
 XML_PROGRAMLISTING     = NO
 GENERATE_HTML          = NO
 GENERATE_LATEX         = NO
+
+# --- CORE FIXES FOR 0B SEQUENCE DIAGRAM ---
+# This ensures Doxygen looks INSIDE the .cpp files for function logic
+SOURCE_BROWSER         = YES
+# This links declarations in .hpp to definitions in .cpp
+INLINE_SOURCES          = YES
+# This allows Doxygen to trace calls even if they aren't documented with comments
