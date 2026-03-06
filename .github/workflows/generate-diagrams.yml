@@ -30,22 +30,29 @@ jobs:
           plantuml docs/diagrams/classes.puml -tpng
           mv docs/diagrams/classes.png docs/diagrams/project_class_diagram.png || true
 
-      - name: Capture Sequence Diagram
+      - name: Generate Master Sequence Diagram
         run: |
-          # Doxygen generates PNGs in the html_docs folder
-          # We find the call graph for main() and move it
           mkdir -p docs/diagrams
-          MAIN_GRAPH=$(find docs/html_docs -name "main_8cpp*cgraph.png" | head -n 1)
+          # We create a REAL Sequence Diagram based on your main.cpp logic
+          echo "@startuml" > sequence.puml
+          echo "skinparam Style strictuml" >> sequence.puml
+          echo "actor User" >> sequence.puml
+          echo "participant Main" >> sequence.puml
+          echo "participant Admin" >> sequence.puml
+          echo "participant Customer" >> sequence.puml
+          echo "participant Cart" >> sequence.puml
           
-          if [ -n "$MAIN_GRAPH" ]; then
-            cp "$MAIN_GRAPH" docs/diagrams/project_sequence_diagram.png
-          else
-            # If main isn't found, find the largest cgraph PNG available
-            BIGGEST_GRAPH=$(find docs/html_docs -name "*cgraph.png" | xargs du -b | sort -nr | head -1 | cut -f2 || echo "")
-            if [ -n "$BIGGEST_GRAPH" ]; then
-              cp "$BIGGEST_GRAPH" docs/diagrams/project_sequence_diagram.png
-            fi
-          fi
+          echo "User -> Main : Execute" >> sequence.puml
+          echo "Main -> Customer : login()" >> sequence.puml
+          echo "Main -> Customer : getCart()" >> sequence.puml
+          echo "Customer -> Cart : add_item()" >> sequence.puml
+          echo "Main -> Customer : place_order()" >> sequence.puml
+          echo "Main -> Admin : login()" >> sequence.puml
+          echo "Main -> Admin : delete_user(buyer)" >> sequence.puml
+          echo "@enduml" >> sequence.puml
+          
+          plantuml sequence.puml -tpng
+          mv sequence.png docs/diagrams/project_sequence_diagram.png
 
       - name: Deploy Diagrams
         run: |
