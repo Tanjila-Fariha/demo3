@@ -1,46 +1,37 @@
 # --- PROJECT INFORMATION ---
-PROJECT_NAME           = "Corporate System Architecture"
+PROJECT_NAME           = "Corporate Demo"
 OUTPUT_DIRECTORY       = docs
 
 # --- INPUT SETTINGS ---
-# Scan from the root to find all folders (identity, roles, commerce, etc.)
+# Scan from the root to catch all files (identity, commerce, roles)
 INPUT                  = .
 RECURSIVE              = YES
-FILE_PATTERNS          = *.cpp *.hpp *.h *.cc
+FILE_PATTERNS          = *.cpp *.hpp *.h
 FULL_PATH_NAMES        = YES
 STRIP_FROM_PATH        = .
 
 # --- EXCLUSIONS ---
 # Prevent Doxygen from scanning its own output or hidden git files
-EXCLUDE                = build .git docs tests node_modules
-EXCLUDE_PATTERNS       = */test/* */external/*
+EXCLUDE = build .git node_modules docs
 
-# --- EXTRACTION SETTINGS ---
-# Extract everything so the UML shows private members and internal logic
+# --- EXTRACTION SETTINGS (Important for accurate maps) ---
 EXTRACT_ALL            = YES
 EXTRACT_PRIVATE        = YES
 EXTRACT_STATIC         = YES
-EXTRACT_LOCAL_CLASSES  = YES
 
-# --- DIAGRAM & GRAPHVIZ (DOT) SETTINGS ---
-# This section is critical for the "Sequence/Call" logic
+# --- DIAGRAM & GRAPHVIZ (DOT) SETTINGS (The Sequence Fix) ---
+# Doxygen uses DOT to trace calls. This must be enabled.
 HAVE_DOT               = YES
 UML_LOOK               = YES
-TEMPLATE_RELATIONS     = YES
 
-# Generate Call Graphs to show function execution flow
+# --- Call Graph Generation (This must be YES for a non-0B diagram) ---
+# This trace calls made BY functions (main -> call -> ...)
 CALL_GRAPH             = YES
+# This trace calls made TO functions (... -> call -> main)
 CALLER_GRAPH           = YES
-DIRECTORY_GRAPH        = YES
-
-# Diagram appearance
-DOT_IMAGE_FORMAT       = png
-DOT_TRANSPARENT        = YES
-DOT_MULTI_TARGETS      = YES
 
 # --- OUTPUT FORMATS ---
 # We disable HTML and LaTeX to keep the CI/CD pipeline fast
-# We enable XML because it provides the data for the master diagrams
 GENERATE_XML           = YES
 XML_PROGRAMLISTING     = NO
 GENERATE_HTML          = NO
