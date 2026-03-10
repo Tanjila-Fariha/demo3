@@ -17,10 +17,14 @@ jobs:
       - name: Install Toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y doxygen graphviz plantuml python3-pip libclang-dev
+          sudo apt-get install -y doxygen graphviz plantuml python3-pip libclang-dev libclang-16-dev
           pip3 install hpp2plantuml clang
-          # This find command ensures we know exactly where libclang is
-          echo "LIBCLANG_PATH=$(dirname $(find /usr/lib/llvm-* -name libclang.so* | head -n 1))" >> $GITHUB_ENV
+          
+          # Force link the versioned library to the generic name Clang expects
+          sudo ln -s /usr/lib/llvm-16/lib/libclang.so.1 /usr/lib/llvm-16/lib/libclang.so || true
+          
+          # Set the path for the environment
+          echo "LIBCLANG_PATH=/usr/lib/llvm-16/lib" >> $GITHUB_ENV
 
       # KEEPING YOUR PERFECT CLASS DIAGRAM LOGIC EXACTLY AS IT WAS
       - name: Generate Master Class Diagram
@@ -40,12 +44,18 @@ jobs:
           import clang.cindex
           import os
 
-          # FIX: Explicitly set the library path from the environment variable
-          lib_path = os.environ.get('LIBCLANG_PATH')
-          if lib_path:
+          # Explicitly set the path to the directory containing libclang.so
+          lib_path = os.environ.get('LIBCLANG_PATH', '/usr/lib/llvm-16/lib')
+          if os.path.exists(lib_path):
               clang.cindex.Config.set_library_path(lib_path)
 
-          idx = clang.cindex.Index.create()
+          try:
+              idx = clang.cindex.Index.create()
+          except Exception as e:
+              print(f"Failed to initialize Clang Index: {e}")
+              # Fallback: try setting the file directly if path fails
+              clang.cindex.Config.set_library_file(os.path.join(lib_path, "libclang.so.1"))
+              idx = clang.cindex.Index.create()
 
           def walk_ast(node, puml, caller_name):
               if node.kind == clang.cindex.CursorKind.IF_STMT:
