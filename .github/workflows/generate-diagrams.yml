@@ -17,12 +17,10 @@ jobs:
       - name: Install Toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y doxygen graphviz plantuml python3-pip libclang-dev
+          sudo apt-get install -y doxygen graphviz plantuml python3-pip libclang-dev llvm
           pip3 install hpp2plantuml clang
-          
-          # Find the actual path of the installed libclang
-          LIB_PATH=$(dirname $(find /usr/lib -name "libclang.so*" | head -n 1))
-          echo "LIBCLANG_PATH=$LIB_PATH" >> $GITHUB_ENV
+          # Use llvm-config to find the exact library directory
+          echo "LIBCLANG_PATH=$(llvm-config --libdir)" >> $GITHUB_ENV
 
       # KEEPING YOUR PERFECT CLASS DIAGRAM LOGIC EXACTLY AS IT WAS
       - name: Generate Master Class Diagram
@@ -41,10 +39,12 @@ jobs:
           python3 - <<'EOF'
           import clang.cindex
           import os
+          import subprocess
 
-          # Disable compatibility check to ignore the missing 'isExplicit' symbol
+          # Disable compatibility check to ignore missing symbols like 'isExplicit'
           clang.cindex.Config.set_compatibility_check(False)
 
+          # Set library path from environment
           lib_path = os.environ.get('LIBCLANG_PATH')
           if lib_path:
               clang.cindex.Config.set_library_path(lib_path)
@@ -52,24 +52,30 @@ jobs:
           try:
               idx = clang.cindex.Index.create()
           except Exception as e:
-              # Final fallback if path-based loading fails
-              print(f"Path load failed, trying direct file load...")
-              lib_file = find /usr/lib -name "libclang.so*" | head -n 1
-              clang.cindex.Config.set_library_file(lib_file)
-              idx = clang.cindex.Index.create()
+              # Robust fallback: search for the .so file manually if the path fails
+              import glob
+              possible_libs = glob.glob("/usr/lib/llvm-*/lib/libclang.so*")
+              if possible_libs:
+                  clang.cindex.Config.set_library_file(possible_libs[0])
+                  idx = clang.cindex.Index.create()
+              else:
+                  raise e
 
           def walk_ast(node, puml, caller_name):
               if node.kind == clang.cindex.CursorKind.IF_STMT:
                   children = list(node.get_children())
-                  cond_tokens = [t.spelling for t in children[0].get_tokens()] if children else []
-                  condition = " ".join(cond_tokens).replace('"', "'") if cond_tokens else "condition"
-                  puml.append(f"alt {condition}")
-                  for child in children[1:]: walk_ast(child, puml, caller_name)
-                  puml.append("end")
+                  if len(children) > 0:
+                      cond_tokens = [t.spelling for t in children[0].get_tokens()]
+                      condition = " ".join(cond_tokens).replace('"', "'") if cond_tokens else "condition"
+                      puml.append(f"alt {condition}")
+                      for child in children[1:]:
+                          walk_ast(child, puml, caller_name)
+                      puml.append("end")
                   return
               elif node.kind in [clang.cindex.CursorKind.FOR_STMT, clang.cindex.CursorKind.WHILE_STMT]:
                   puml.append("loop iteration")
-                  for child in node.get_children(): walk_ast(child, puml, caller_name)
+                  for child in node.get_children():
+                      walk_ast(child, puml, caller_name)
                   puml.append("end")
                   return
               elif node.kind == clang.cindex.CursorKind.CALL_EXPR:
@@ -81,7 +87,8 @@ jobs:
                           puml.append(f"activate {parent}")
                           puml.append(f"{parent} --> {caller_name} : return")
                           puml.append(f"deactivate {parent}")
-              for child in node.get_children(): walk_ast(child, puml, caller_name)
+              for child in node.get_children():
+                  walk_ast(child, puml, caller_name)
 
           extensions = ('.cpp', '.hpp', '.h', '.cc', '.cxx')
           for root, _, files in os.walk('.'):
