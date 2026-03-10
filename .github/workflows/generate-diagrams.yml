@@ -17,72 +17,74 @@ jobs:
       - name: Install Toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y doxygen graphviz plantuml python3-pip
-          pip3 install hpp2plantuml
+          sudo apt-get install -y doxygen graphviz plantuml python3-pip libclang-dev
+          pip3 install hpp2plantuml clang
 
       - name: Run Doxygen
         run: doxygen Doxyfile
 
       - name: Generate Master Class Diagram
         run: |
-          mkdir -p docs/diagrams
-          hpp2plantuml -i "**/*.hpp" -o docs/diagrams/classes.puml
+          mkdir -p docs/diagrams/methods
+          # Scans all .h and .hpp for the class structure
+          hpp2plantuml -i "**/*.h*" -o docs/diagrams/classes.puml
           plantuml docs/diagrams/classes.puml -tpng
           mv docs/diagrams/classes.png docs/diagrams/project_class_diagram.png || true
 
-      - name: Generate Method-Level Sequence Diagrams
+      - name: Generate AST-Detailed Sequence Diagrams (All Extensions)
         run: |
-          mkdir -p docs/diagrams/methods
-          python3 - <<EOF
+          python3 - <<'EOF'
+          import clang.cindex
           import os
-          import xml.etree.ElementTree as ET
 
-          xml_dir = 'docs/xml'
-          if not os.path.exists(xml_dir):
-              print("XML directory not found!")
-              exit(0)
+          idx = clang.cindex.Index.create()
 
-          # Iterate through class XML files
-          for fn in os.listdir(xml_dir):
-              if fn.startswith('class') and fn.endswith('.xml'):
-                  tree = ET.parse(os.path.join(xml_dir, fn))
-                  class_name = tree.find(".//compoundname").text.replace('::', '_')
-                  
-                  # Find all functions/methods in this class
-                  for member in tree.findall(".//memberdef[@kind='function']"):
-                      method_name = member.find('name').text
-                      
-                      # Check if this method actually calls other things
-                      references = member.findall(".//references")
-                      if not references:
-                          continue
-                          
-                      puml = [
-                          "@startuml",
-                          "skinparam style strictuml",
-                          "skinparam sequenceMessageAlign center",
-                          f"participant {class_name}"
-                      ]
-                      
-                      for ref in references:
-                          call = ref.text
-                          if '::' in call:
-                              target_obj, target_method = call.split('::', 1)
-                              puml.append(f"{class_name} -> {target_obj} : {target_method}()")
-                              puml.append(f"activate {target_obj}")
-                              puml.append(f"{target_obj} --> {class_name} : return")
-                              puml.append(f"deactivate {target_obj}")
-                      
-                      puml.append("@enduml")
-                      
-                      # Create unique file for this method
-                      file_base = f"{class_name}_{method_name}"
-                      with open(f"{file_base}.puml", "w") as f:
-                          f.write("\n".join(puml))
-                      
-                      # Render
-                      os.system(f"plantuml {file_base}.puml -tpng")
-                      os.system(f"mv {file_base}.png docs/diagrams/methods/")
+          def walk_ast(node, puml, caller_name):
+              if node.kind == clang.cindex.CursorKind.IF_STMT:
+                  children = list(node.get_children())
+                  cond_tokens = [t.spelling for t in children[0].get_tokens()] if children else []
+                  condition = " ".join(cond_tokens).replace('"', "'") if cond_tokens else "condition"
+                  puml.append(f"alt {condition}")
+                  for child in children[1:]: walk_ast(child, puml, caller_name)
+                  puml.append("end")
+                  return
+              elif node.kind in [clang.cindex.CursorKind.FOR_STMT, clang.cindex.CursorKind.WHILE_STMT]:
+                  puml.append("loop iteration")
+                  for child in node.get_children(): walk_ast(child, puml, caller_name)
+                  puml.append("end")
+                  return
+              elif node.kind == clang.cindex.CursorKind.CALL_EXPR:
+                  target_meth = node.spelling
+                  if node.referenced and node.referenced.semantic_parent:
+                      parent = node.referenced.semantic_parent.spelling
+                      if parent and parent != caller_name:
+                          puml.append(f"{caller_name} -> {parent} : {target_meth}()")
+                          puml.append(f"activate {parent}")
+                          puml.append(f"{parent} --> {caller_name} : return")
+                          puml.append(f"deactivate {parent}")
+              for child in node.get_children(): walk_ast(child, puml, caller_name)
+
+          extensions = ('.cpp', '.hpp', '.h', '.cc', '.cxx')
+          for root, _, files in os.walk('.'):
+              for file in files:
+                  if file.lower().endswith(extensions):
+                      path = os.path.join(root, file)
+                      tu = idx.parse(path, args=['-I.']) 
+                      for node in tu.cursor.walk_preorder():
+                          if node.kind in [clang.cindex.CursorKind.FUNCTION_DECL, clang.cindex.CursorKind.CXX_METHOD]:
+                              if list(node.get_children()):
+                                  class_name = node.semantic_parent.spelling if node.semantic_parent else "Global"
+                                  method_name = node.spelling
+                                  display_name = f"{class_name}_{method_name}".replace(':', '_')
+                                  puml = ["@startuml", "skinparam style strictuml", f"participant {class_name}"]
+                                  walk_ast(node, puml, class_name)
+                                  puml.append("@enduml")
+                                  if len(puml) > 4:
+                                      f_base = f"ast_{display_name}"
+                                      with open(f"{f_base}.puml", "w") as f: f.write("\n".join(puml))
+                                      os.system(f"plantuml {f_base}.puml -tpng")
+                                      os.system(f"mv {f_base}.png docs/diagrams/methods/ 2>/dev/null || true")
+                                      if os.path.exists(f"{f_base}.puml"): os.remove(f"{f_base}.puml")
           EOF
 
       - name: Deploy Diagrams
@@ -90,6 +92,6 @@ jobs:
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add docs/diagrams/*.png docs/diagrams/methods/*.png
-          git commit -m "docs: sync architecture and method-level diagrams" || exit 0
+          git commit -m "docs: sync all diagrams from .cpp, .h, and .hpp" || exit 0
           git pull origin main --rebase
           git push origin main
