@@ -17,14 +17,12 @@ jobs:
       - name: Install Toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y doxygen graphviz plantuml python3-pip libclang-dev libclang-16-dev
+          sudo apt-get install -y doxygen graphviz plantuml python3-pip libclang-dev
           pip3 install hpp2plantuml clang
           
-          # Force link the versioned library to the generic name Clang expects
-          sudo ln -s /usr/lib/llvm-16/lib/libclang.so.1 /usr/lib/llvm-16/lib/libclang.so || true
-          
-          # Set the path for the environment
-          echo "LIBCLANG_PATH=/usr/lib/llvm-16/lib" >> $GITHUB_ENV
+          # Find the actual path of the installed libclang
+          LIB_PATH=$(dirname $(find /usr/lib -name "libclang.so*" | head -n 1))
+          echo "LIBCLANG_PATH=$LIB_PATH" >> $GITHUB_ENV
 
       # KEEPING YOUR PERFECT CLASS DIAGRAM LOGIC EXACTLY AS IT WAS
       - name: Generate Master Class Diagram
@@ -44,17 +42,20 @@ jobs:
           import clang.cindex
           import os
 
-          # Explicitly set the path to the directory containing libclang.so
-          lib_path = os.environ.get('LIBCLANG_PATH', '/usr/lib/llvm-16/lib')
-          if os.path.exists(lib_path):
+          # Disable compatibility check to ignore the missing 'isExplicit' symbol
+          clang.cindex.Config.set_compatibility_check(False)
+
+          lib_path = os.environ.get('LIBCLANG_PATH')
+          if lib_path:
               clang.cindex.Config.set_library_path(lib_path)
 
           try:
               idx = clang.cindex.Index.create()
           except Exception as e:
-              print(f"Failed to initialize Clang Index: {e}")
-              # Fallback: try setting the file directly if path fails
-              clang.cindex.Config.set_library_file(os.path.join(lib_path, "libclang.so.1"))
+              # Final fallback if path-based loading fails
+              print(f"Path load failed, trying direct file load...")
+              lib_file = find /usr/lib -name "libclang.so*" | head -n 1
+              clang.cindex.Config.set_library_file(lib_file)
               idx = clang.cindex.Index.create()
 
           def walk_ast(node, puml, caller_name):
