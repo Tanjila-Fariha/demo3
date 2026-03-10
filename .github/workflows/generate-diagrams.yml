@@ -19,6 +19,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y doxygen graphviz plantuml python3-pip libclang-dev
           pip3 install hpp2plantuml clang
+          # This find command ensures we know exactly where libclang is
+          echo "LIBCLANG_PATH=$(dirname $(find /usr/lib/llvm-* -name libclang.so* | head -n 1))" >> $GITHUB_ENV
 
       # KEEPING YOUR PERFECT CLASS DIAGRAM LOGIC EXACTLY AS IT WAS
       - name: Generate Master Class Diagram
@@ -32,12 +34,16 @@ jobs:
       - name: Run Doxygen
         run: doxygen Doxyfile
 
-      # UPDATED SEQUENCE LOGIC (AST/Clang)
       - name: Generate AST-Detailed Sequence Diagrams (All Extensions)
         run: |
           python3 - <<'EOF'
           import clang.cindex
           import os
+
+          # FIX: Explicitly set the library path from the environment variable
+          lib_path = os.environ.get('LIBCLANG_PATH')
+          if lib_path:
+              clang.cindex.Config.set_library_path(lib_path)
 
           idx = clang.cindex.Index.create()
 
@@ -68,7 +74,6 @@ jobs:
 
           extensions = ('.cpp', '.hpp', '.h', '.cc', '.cxx')
           for root, _, files in os.walk('.'):
-              # Skip the docs folder to prevent parsing generated HTML as code
               if 'docs' in root: continue 
               for file in files:
                   if file.lower().endswith(extensions):
