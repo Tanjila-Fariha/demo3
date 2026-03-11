@@ -10,6 +10,7 @@ name: Generate Sequence Diagrams (clang-uml)
 # at any directory depth.
 # ─────────────────────────────────────────────────────────────────────────────
 on:
+  workflow_dispatch:
   push:
     branches:
       - '**'
