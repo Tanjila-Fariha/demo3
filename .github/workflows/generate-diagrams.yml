@@ -49,7 +49,11 @@ jobs:
 
           idx = clang.cindex.Index.create()
 
+          # Get the absolute path of your project root
+          project_root = os.getcwd()
+
           def walk_ast(node, puml, caller_name):
+              # ... (keep walk_ast exactly as it was) ...
               if node.kind == clang.cindex.CursorKind.IF_STMT:
                   children = list(node.get_children())
                   if children:
@@ -73,42 +77,51 @@ jobs:
               for child in node.get_children(): walk_ast(child, puml, caller_name)
 
           extensions = ('.cpp', '.hpp', '.h', '.cc', '.cxx')
-          for root, _, files in os.walk('.'):
-              if 'docs' in root: continue 
+          output_dir = "docs/diagrams/methods"
+          os.makedirs(output_dir, exist_ok=True)
+
+          for root, dirs, files in os.walk('.'):
+              if 'docs' in root or '.github' in root:
+                  continue 
+              
               for file in files:
                   if file.lower().endswith(extensions):
                       path = os.path.join(root, file)
                       tu = idx.parse(path, args=['-I.']) 
+                      
                       for node in tu.cursor.walk_preorder():
                           if node.kind in [clang.cindex.CursorKind.FUNCTION_DECL, clang.cindex.CursorKind.CXX_METHOD]:
-                              # Skip internal/system functions
-                              if not node.spelling or node.spelling.startswith('__'): continue
                               
-                              if list(node.get_children()):
-                                  class_name = node.semantic_parent.spelling if node.semantic_parent else "Global"
-                                  method_name = node.spelling
-                                  
-                                  # CLEAN FILENAME: Remove anything not alpha-numeric
-                                  safe_name = re.sub(r'[^a-zA-Z0-9_]', '_', f"{class_name}_{method_name}")
-                                  f_base = f"ast_{safe_name}"
-                                  
-                                  puml = ["@startuml", "skinparam style strictuml", f"participant {class_name}"]
-                                  walk_ast(node, puml, class_name)
-                                  puml.append("@enduml")
-                                  
-                                  if len(puml) > 4:
-                                      puml_file = f"{f_base}.puml"
-                                      with open(puml_file, "w") as f: f.write("\n".join(puml))
-                                      
-                                      # Run PlantUML via shell only for the render
-                                      os.system(f"plantuml {puml_file} -tpng")
-                                      
-                                      # Move files using Python logic to avoid shell errors
-                                      png_file = f"{f_base}.png"
-                                      if os.path.exists(png_file):
-                                          dest = os.path.join("docs/diagrams/methods", png_file)
-                                          shutil.move(png_file, dest)
-                                      if os.path.exists(puml_file): os.remove(puml_file)
+                              # --- NEW FILTERING LOGIC ---
+                              # 1. Skip if the function doesn't have a body (declaration only)
+                              if not node.is_definition():
+                                  continue
+                              
+                              # 2. Skip if the file is NOT in your project directory (Filters out /usr/include/...)
+                              file_path = node.location.file.name if node.location.file else ""
+                              if not file_path.startswith(project_root) or "/usr/" in file_path:
+                                  continue
+                              # ---------------------------
+
+                              class_name = node.semantic_parent.spelling if node.semantic_parent else "Global"
+                              method_name = node.spelling
+                              
+                              safe_filename = re.sub(r'[^a-zA-Z0-9_]', '_', f"{class_name}_{method_name}")
+                              f_base = f"ast_{safe_filename}"
+                              
+                              puml = ["@startuml", "skinparam style strictuml", f"participant {class_name}"]
+                              walk_ast(node, puml, class_name)
+                              puml.append("@enduml")
+                              
+                              if len(puml) > 4:
+                                  puml_file = f"{f_base}.puml"
+                                  with open(puml_file, "w") as f: f.write("\n".join(puml))
+                                  os.system(f'plantuml "{puml_file}" -tpng')
+                                  png_file = f"{f_base}.png"
+                                  if os.path.exists(png_file):
+                                      shutil.move(png_file, os.path.join(output_dir, png_file))
+                                  if os.path.exists(puml_file):
+                                      os.remove(puml_file)
           EOF
 
       - name: Deploy Diagrams
