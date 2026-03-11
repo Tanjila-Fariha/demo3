@@ -1,14 +1,5 @@
 name: Generate Sequence Diagrams (clang-uml)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Works on ANY C++ project.  No configuration needed beyond the 3-step setup:
-#   1. This file in  .github/workflows/
-#   2. discover_and_generate.py in  .github/scripts/
-#   3. set(CMAKE_EXPORT_COMPILE_COMMANDS ON)  in CMakeLists.txt
-#
-# Triggers whenever any C++ source file or CMakeLists.txt is pushed,
-# at any directory depth.
-# ─────────────────────────────────────────────────────────────────────────────
 on:
   workflow_dispatch:
   push:
@@ -22,7 +13,6 @@ on:
       - '**.h'
       - '**/CMakeLists.txt'
 
-# Cancel a running job if a newer push arrives on the same branch
 concurrency:
   group: diagrams-${{ github.ref }}
   cancel-in-progress: true
@@ -31,24 +21,16 @@ jobs:
   generate-diagrams:
     runs-on: ubuntu-22.04
     permissions:
-      contents: write     # required to commit diagrams back to the branch
+      contents: write
 
     steps:
-      # ── 1. Checkout ──────────────────────────────────────────────────────────
+      # ── 1. Checkout ───────────────────────────────────────────────────────────
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0    # full history needed for source-link generation
+          fetch-depth: 0
 
       # ── 2. Install tools ──────────────────────────────────────────────────────
-      #
-      #  clang-uml   official Ubuntu PPA — parses the C++ AST and emits .puml
-      #  cmake       generates compile_commands.json from CMakeLists.txt
-      #  ninja       fast build backend used with cmake
-      #  java (jre)  runs the PlantUML .jar
-      #  graphviz    PlantUML layout engine
-      #  python3     runs discover_and_generate.py
-      #
       - name: Install tools
         run: |
           sudo add-apt-repository -y ppa:bkryza/clang-uml
@@ -60,30 +42,21 @@ jobs:
             default-jre-headless \
             graphviz \
             python3
-          echo "clang-uml $(clang-uml --version 2>&1 | head -1)"
+          echo "clang-uml: $(clang-uml --version 2>&1 | head -1)"
+          echo "cmake:     $(cmake --version | head -1)"
+          echo "java:      $(java -version 2>&1 | head -1)"
 
-      # ── 3. Download PlantUML jar ──────────────────────────────────────────────
+      # ── 3. Download PlantUML ──────────────────────────────────────────────────
       - name: Download PlantUML
         run: |
           curl -sSL \
             https://github.com/plantuml/plantuml/releases/latest/download/plantuml.jar \
             -o /usr/local/bin/plantuml.jar
+          echo "PlantUML downloaded"
 
-      # ── 4. Generate compile_commands.json via CMake ───────────────────────────
-      #
-      #  CMAKE_EXPORT_COMPILE_COMMANDS=ON  — writes build/compile_commands.json
-      #  This file is the single source of truth that clang-uml uses to know:
-      #    • every .cpp file that belongs to the project
-      #    • every include path and compiler flag
-      #
-      #  If your project uses Meson instead of CMake, replace this step with:
-      #      meson setup build
-      #  Meson writes compile_commands.json automatically.
-      #
-      #  If your project uses Make or any other build system, use Bear:
-      #      sudo apt-get install bear
-      #      bear -- make
-      #
+      # ── 4. CMake configure ────────────────────────────────────────────────────
+      # Generates build/compile_commands.json — the file clang-uml needs to
+      # understand every source file, include path and compiler flag.
       - name: Configure CMake → compile_commands.json
         run: |
           cmake -S . -B build \
@@ -91,32 +64,45 @@ jobs:
             -DCMAKE_BUILD_TYPE=Debug \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
+          # ── DIAGNOSTIC: verify compile_commands.json was created ─────────────
+          if [ ! -f build/compile_commands.json ]; then
+            echo ""
+            echo "================================================================"
+            echo "ERROR: build/compile_commands.json was NOT created."
+            echo "Fix: add this line to your CMakeLists.txt:"
+            echo "     set(CMAKE_EXPORT_COMPILE_COMMANDS ON)"
+            echo "================================================================"
+            exit 1
+          fi
+
           ENTRY_COUNT=$(python3 -c \
             "import json; print(len(json.load(open('build/compile_commands.json'))))")
-          echo "compile_commands.json: $ENTRY_COUNT translation unit(s)"
 
-      # ── 5. Auto-discover namespaces + methods, write per-method configs ───────
-      #
-      #  discover_and_generate.py runs 5 internal stages:
-      #
-      #  [1] Reads compile_commands.json to find every compiled source file,
-      #      no matter how deeply nested in the project tree.
-      #
-      #  [2] Recursively scans those source files with a regex to detect the
-      #      project's own C++ namespaces automatically — no hardcoding.
-      #
-      #  [3] Computes the complete set of source directories to give
-      #      clang-uml accurate `paths` filters.
-      #
-      #  [4] Writes a probe config and runs  clang-uml --print-from  to get
-      #      every callable method in the project.
-      #
-      #  [5] Writes one small .yaml config per method into .clang-uml-generated/
-      #      and writes manifest.json listing every config path.
-      #
-      #  Optional: add  --exclude-ns SomeLib  to skip a third-party namespace.
-      #  Optional: add  --min-calls 2         to skip trivial one-liner methods.
-      #
+          if [ "$ENTRY_COUNT" -eq 0 ]; then
+            echo ""
+            echo "================================================================"
+            echo "ERROR: compile_commands.json exists but is empty."
+            echo "No source files were found by CMake."
+            echo "Check that your CMakeLists.txt finds your .cpp files."
+            echo "================================================================"
+            exit 1
+          fi
+
+          echo ""
+          echo "================================================================"
+          echo "compile_commands.json: $ENTRY_COUNT source file(s) found"
+          echo "Files registered:"
+          python3 -c "
+          import json
+          for e in json.load(open('build/compile_commands.json')):
+              print('  ', e['file'])
+          "
+          echo "================================================================"
+
+      # ── 5. Discover all methods ───────────────────────────────────────────────
+      # Reads compile_commands.json to find source files, detects namespaces
+      # by scanning source code, probes clang-uml for all callable methods,
+      # and writes one YAML config per method.
       - name: Discover methods → write per-method configs
         run: |
           mkdir -p docs/diagrams/puml .clang-uml-generated
@@ -126,49 +112,101 @@ jobs:
             --out-dir   docs/diagrams/puml \
             --cfg-dir   .clang-uml-generated
 
-          # manifest.json is always written by the script (even as [] on failure)
+          # ── DIAGNOSTIC ───────────────────────────────────────────────────────
+          if [ ! -f .clang-uml-generated/manifest.json ]; then
+            echo "ERROR: manifest.json not created — discovery script failed."
+            exit 1
+          fi
+
           METHOD_COUNT=$(python3 -c \
             "import json; print(len(json.load(open('.clang-uml-generated/manifest.json'))))")
           echo "methods_found=$METHOD_COUNT" >> $GITHUB_ENV
-          echo "Methods to diagram: $METHOD_COUNT"
+
+          echo ""
+          echo "================================================================"
+          echo "Methods discovered: $METHOD_COUNT"
 
           if [ "$METHOD_COUNT" -eq 0 ]; then
-            echo "::warning::No methods discovered. Check clang-uml output above."
+            echo ""
+            echo "ERROR: No methods found. Showing probe config for debugging:"
+            echo "----------------------------------------------------------------"
+            cat .clang-uml-generated/_probe_.yaml
+            echo "----------------------------------------------------------------"
+            echo ""
+            echo "Common causes:"
+            echo "  1. All code is in the global namespace (no 'namespace X {}' blocks)"
+            echo "     Fix: the script will still include global functions if this is the case"
+            echo "  2. clang-uml --print-from produced no output"
+            echo "     Fix: check that your code compiles without errors"
+            echo "  3. compile_commands.json paths don't match actual source locations"
+            echo "================================================================"
+            exit 1
           fi
 
+          echo ""
+          echo "Methods to be diagrammed (first 30):"
+          python3 -c "
+          import json, pathlib
+          cfgs = json.load(open('.clang-uml-generated/manifest.json'))
+          for c in cfgs[:30]:
+              print('  ', pathlib.Path(c).stem)
+          if len(cfgs) > 30:
+              print(f'  ... and {len(cfgs) - 30} more')
+          "
+          echo "================================================================"
+
       # ── 6. Run clang-uml — one .puml per method ───────────────────────────────
-      #
-      #  Each config targets exactly one method entry point.
-      #  clang-uml walks the full call chain from that method and emits a
-      #  .puml file that captures:
-      #    • arrows between participants  (inter-class calls)
-      #    • loop [ condition ]           (while / for / do-while / range-for)
-      #    • alt [ condition ] / opt      (if-else / if without else / switch)
-      #    • object creation messages     (new ClassName())
-      #    • return annotations           (labelled return arrows)
-      #    • notes                        (// comments above calls)
-      #
       - name: Run clang-uml → .puml files
         run: |
           MANIFEST=".clang-uml-generated/manifest.json"
           OK=0
           SKIP=0
+          FIRST_ERROR=""
 
-          # Read the manifest — if it is empty ([]) the loop simply does nothing
           while IFS= read -r CFG; do
             [ -z "$CFG" ] && continue
-            # Show stderr so parse failures are visible in CI logs
-            if clang-uml --config "$CFG" --no-metadata; then
+            NAME=$(basename "$CFG" .yaml)
+
+            # Capture output — print stderr only on failure
+            OUTPUT=$(clang-uml --config "$CFG" --no-metadata 2>&1)
+            if [ $? -eq 0 ]; then
               OK=$((OK + 1))
             else
-              echo "  [WARN] clang-uml failed for $(basename $CFG .yaml)"
               SKIP=$((SKIP + 1))
+              # Save the very first error message for diagnostics
+              if [ -z "$FIRST_ERROR" ]; then
+                FIRST_ERROR="$NAME: $(echo "$OUTPUT" | head -5)"
+              fi
             fi
           done < <(python3 -c \
             "import json; [print(p) for p in json.load(open('$MANIFEST'))]")
 
           PUML=$(find docs/diagrams/puml -name "*.puml" 2>/dev/null | wc -l)
-          echo "clang-uml: $OK ok · $SKIP skipped · $PUML .puml files total"
+
+          echo ""
+          echo "================================================================"
+          echo "clang-uml results:"
+          echo "  OK:      $OK"
+          echo "  Skipped: $SKIP"
+          echo "  .puml files generated: $PUML"
+
+          if [ -n "$FIRST_ERROR" ]; then
+            echo ""
+            echo "First error encountered:"
+            echo "  $FIRST_ERROR"
+          fi
+
+          if [ "$PUML" -eq 0 ]; then
+            echo ""
+            echo "ERROR: 0 .puml files were generated."
+            echo "Possible causes:"
+            echo "  1. C++ standard mismatch — verify CMAKE_CXX_STANDARD matches your code"
+            echo "  2. Missing system headers — try adding 'apt-get install libstdc++-11-dev'"
+            echo "  3. Methods have no outgoing calls — nothing to draw a sequence for"
+            echo "================================================================"
+            exit 1
+          fi
+          echo "================================================================"
           echo "puml_count=$PUML" >> $GITHUB_ENV
 
       # ── 7. Render .puml → SVG + PNG ───────────────────────────────────────────
@@ -188,9 +226,13 @@ jobs:
 
           SVG=$(find docs/diagrams/svg -name "*.svg" | wc -l)
           PNG=$(find docs/diagrams/png -name "*.png" | wc -l)
-          echo "Rendered: $SVG SVG · $PNG PNG"
 
-      # ── 8. Build a searchable HTML index ─────────────────────────────────────
+          echo ""
+          echo "================================================================"
+          echo "Rendered: $SVG SVG · $PNG PNG"
+          echo "================================================================"
+
+      # ── 8. Generate searchable HTML index ────────────────────────────────────
       - name: Generate HTML index
         run: |
           python3 - <<'PYEOF'
@@ -222,7 +264,7 @@ jobs:
                 </div>
               </div>"""
 
-          html = f"""<!DOCTYPE html>
+          page = f"""<!DOCTYPE html>
           <html lang="en">
           <head>
             <meta charset="UTF-8">
@@ -237,8 +279,7 @@ jobs:
               input{{width:100%;padding:.55rem .85rem;font-size:.9rem;
                      border:1px solid #ccc;border-radius:7px;margin-bottom:1.5rem;outline:none}}
               input:focus{{border-color:#0070f3;box-shadow:0 0 0 3px rgba(0,112,243,.15)}}
-              .grid{{display:grid;
-                     grid-template-columns:repeat(auto-fill,minmax(440px,1fr));gap:1.25rem}}
+              .grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(440px,1fr));gap:1.25rem}}
               .card{{background:#fff;border-radius:10px;padding:1.1rem;
                      box-shadow:0 1px 6px rgba(0,0,0,.09);transition:box-shadow .15s}}
               .card:hover{{box-shadow:0 4px 14px rgba(0,0,0,.13)}}
@@ -266,7 +307,7 @@ jobs:
           </body>
           </html>"""
 
-          out_path.write_text(html, encoding="utf-8")
+          out_path.write_text(page, encoding="utf-8")
           print(f"Index written: {out_path}  ({len(svgs)} diagram(s))")
           PYEOF
 
@@ -285,7 +326,7 @@ jobs:
             echo "Pushed $N file(s)."
           fi
 
-      # ── 10. Always upload as a downloadable artifact ─────────────────────────
+      # ── 10. Always upload artifact ────────────────────────────────────────────
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         if: always()
