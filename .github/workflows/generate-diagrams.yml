@@ -16,12 +16,14 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # install dependencies
       - name: Install dependencies
         run: |
           sudo apt update
           sudo apt install -y \
             clang \
+            clang-17 \
+            libclang-17-dev \
+            llvm-17-dev \
             cmake \
             plantuml \
             graphviz \
