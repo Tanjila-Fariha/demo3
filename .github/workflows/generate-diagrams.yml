@@ -125,11 +125,15 @@ jobs:
             --out-dir   docs/diagrams/puml \
             --cfg-dir   .clang-uml-generated
 
+          # manifest.json is always written by the script (even as [] on failure)
           METHOD_COUNT=$(python3 -c \
-            "import json; \
-             print(len(json.load(open('.clang-uml-generated/manifest.json'))))")
+            "import json; print(len(json.load(open('.clang-uml-generated/manifest.json'))))")
           echo "methods_found=$METHOD_COUNT" >> $GITHUB_ENV
           echo "Methods to diagram: $METHOD_COUNT"
+
+          if [ "$METHOD_COUNT" -eq 0 ]; then
+            echo "::warning::No methods discovered. Check clang-uml output above."
+          fi
 
       # ── 6. Run clang-uml — one .puml per method ───────────────────────────────
       #
@@ -149,11 +153,14 @@ jobs:
           OK=0
           SKIP=0
 
+          # Read the manifest — if it is empty ([]) the loop simply does nothing
           while IFS= read -r CFG; do
             [ -z "$CFG" ] && continue
-            if clang-uml --config "$CFG" --no-metadata 2>/dev/null; then
+            # Show stderr so parse failures are visible in CI logs
+            if clang-uml --config "$CFG" --no-metadata; then
               OK=$((OK + 1))
             else
+              echo "  [WARN] clang-uml failed for $(basename $CFG .yaml)"
               SKIP=$((SKIP + 1))
             fi
           done < <(python3 -c \
