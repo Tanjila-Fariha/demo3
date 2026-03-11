@@ -1,143 +1,51 @@
-name: Auto-Generate Professional UML
+name: Generate Function Sequence Diagrams
 
 on:
   push:
     branches: [ main ]
+  pull_request:
 
 jobs:
-  uml-gen:
+
+  diagrams:
+
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
 
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
 
-      - name: Install Toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y doxygen graphviz plantuml python3-pip libclang-dev llvm
-          pip3 install hpp2plantuml clang
-          # Use llvm-config to find the exact library directory
-          echo "LIBCLANG_PATH=$(llvm-config --libdir)" >> $GITHUB_ENV
+    - name: Checkout repository
+      uses: actions/checkout@v4
 
-      # KEEPING YOUR PERFECT CLASS DIAGRAM LOGIC EXACTLY AS IT WAS
-      - name: Generate Master Class Diagram
-        run: |
-          mkdir -p docs/diagrams/methods
-          hpp2plantuml -i "**/*.hpp" -o docs/diagrams/classes.puml
-          plantuml docs/diagrams/classes.puml -tpng
-          mv docs/diagrams/classes.png docs/diagrams/project_class_diagram.png || true
+    - name: Install dependencies
+      run: |
+        sudo apt update
+        sudo apt install -y clang cmake plantuml graphviz
 
-      # NOW RUN DOXYGEN (After class diagram to avoid the .html conflict)
-      - name: Run Doxygen
-        run: doxygen Doxyfile
+    - name: Install clang-uml
+      run: |
+        git clone https://github.com/bkryza/clang-uml.git
+        cd clang-uml
+        mkdir build
+        cd build
+        cmake ..
+        make
+        sudo make install
 
-      - name: Generate AST-Detailed Sequence Diagrams (All Extensions)
-        run: |
-          python3 - <<'EOF'
-          import clang.cindex
-          import os
-          import re
-          import shutil
+    - name: Configure project
+      run: |
+        mkdir build
+        cd build
+        cmake ..
 
-          clang.cindex.Config.set_compatibility_check(False)
-          lib_path = os.environ.get('LIBCLANG_PATH')
-          if lib_path:
-              clang.cindex.Config.set_library_path(lib_path)
+    - name: Generate sequence diagrams
+      run: clang-uml
 
-          idx = clang.cindex.Index.create()
+    - name: Render diagrams
+      run: |
+        find diagrams -name "*.puml" -exec plantuml -tsvg {} \;
 
-          # Get the absolute path of your project root
-          project_root = os.getcwd()
-
-          def walk_ast(node, puml, caller_name):
-              # ... (keep walk_ast exactly as it was) ...
-              if node.kind == clang.cindex.CursorKind.IF_STMT:
-                  children = list(node.get_children())
-                  if children:
-                      cond_tokens = [t.spelling for t in children[0].get_tokens()]
-                      condition = " ".join(cond_tokens).replace('"', "'") if cond_tokens else "condition"
-                      puml.append(f"alt {condition}")
-                      for child in children[1:]: walk_ast(child, puml, caller_name)
-                      puml.append("end")
-                  return
-              elif node.kind in [clang.cindex.CursorKind.FOR_STMT, clang.cindex.CursorKind.WHILE_STMT]:
-                  puml.append("loop iteration")
-                  for child in node.get_children(): walk_ast(child, puml, caller_name)
-                  puml.append("end")
-                  return
-              elif node.kind == clang.cindex.CursorKind.CALL_EXPR:
-                  target_meth = node.spelling
-                  if node.referenced and node.referenced.semantic_parent:
-                      parent = node.referenced.semantic_parent.spelling
-                      if parent and parent != caller_name:
-                          puml.append(f"{caller_name} -> {parent} : {target_meth}()")
-              for child in node.get_children(): walk_ast(child, puml, caller_name)
-
-          extensions = ('.cpp', '.hpp', '.h', '.cc', '.cxx')
-          output_dir = "docs/diagrams/methods"
-          os.makedirs(output_dir, exist_ok=True)
-
-          for root, dirs, files in os.walk('.'):
-              if 'docs' in root or '.github' in root:
-                  continue 
-              
-              for file in files:
-                  if file.lower().endswith(extensions):
-                      path = os.path.join(root, file)
-                      tu = idx.parse(path, args=['-I.']) 
-                      
-                      for node in tu.cursor.walk_preorder():
-                          if node.kind in [clang.cindex.CursorKind.FUNCTION_DECL, clang.cindex.CursorKind.CXX_METHOD]:
-                              
-                              # --- NEW FILTERING LOGIC ---
-                              # 1. Skip if the function doesn't have a body (declaration only)
-                              if not node.is_definition():
-                                  continue
-                              
-                              # 2. Skip if the file is NOT in your project directory (Filters out /usr/include/...)
-                              file_path = node.location.file.name if node.location.file else ""
-                              if not file_path.startswith(project_root) or "/usr/" in file_path:
-                                  continue
-                              # ---------------------------
-
-                              class_name = node.semantic_parent.spelling if node.semantic_parent else "Global"
-                              method_name = node.spelling
-                              
-                              safe_filename = re.sub(r'[^a-zA-Z0-9_]', '_', f"{class_name}_{method_name}")
-                              f_base = f"ast_{safe_filename}"
-                              
-                              puml = ["@startuml", "skinparam style strictuml", f"participant {class_name}"]
-                              walk_ast(node, puml, class_name)
-                              puml.append("@enduml")
-                              
-                              if len(puml) > 4:
-                                  puml_file = f"{f_base}.puml"
-                                  with open(puml_file, "w") as f: f.write("\n".join(puml))
-                                  os.system(f'plantuml "{puml_file}" -tpng')
-                                  png_file = f"{f_base}.png"
-                                  if os.path.exists(png_file):
-                                      shutil.move(png_file, os.path.join(output_dir, png_file))
-                                  if os.path.exists(puml_file):
-                                      os.remove(puml_file)
-          EOF
-
-        - name: Deploy Diagrams
-          run: |
-            git config --local user.email "action@github.com"
-            git config --local user.name "GitHub Action"
-            
-            # Use a check to see if files exist before adding, or just add the whole directory
-            # This prevents the "pathspec" error if the folder is empty
-            mkdir -p docs/diagrams/methods
-            git add docs/diagrams/*.png 2>/dev/null || true
-            git add docs/diagrams/methods/*.png 2>/dev/null || true
-            
-            # Alternatively, the most robust way:
-            # git add docs/diagrams/
-            
-            git commit -m "docs: sync all diagrams" || exit 0
-            git pull origin main --rebase
-            git push origin main
+    - name: Upload diagrams
+      uses: actions/upload-artifact@v4
+      with:
+        name: function-sequence-diagrams
+        path: diagrams

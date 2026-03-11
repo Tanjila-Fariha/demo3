@@ -1,0 +1,26 @@
+compilation_database_dir: build
+output_directory: diagrams
+
+diagrams:
+
+  all_function_sequences:
+    type: sequence
+
+    glob:
+      - src/**/*.cpp
+      - src/**/*.hpp
+      - src/**/*.h
+
+    from:
+      - function: ".*"
+
+    generate_condition_statements: true
+    generate_method_arguments: true
+    generate_return_types: true
+
+    inline_functions:
+      - ".*"
+
+    combine_free_functions_into_file_participants: true
+
+    max_message_depth: 10
