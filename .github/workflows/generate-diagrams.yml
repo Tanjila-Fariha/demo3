@@ -1,4 +1,4 @@
-name: Generate Function Sequence Diagrams
+name: Generate C++ Sequence Diagrams
 
 on:
   push:
@@ -7,45 +7,59 @@ on:
 
 jobs:
 
-  diagrams:
+  build-sequence-diagrams:
 
     runs-on: ubuntu-latest
 
     steps:
 
-    - name: Checkout repository
-      uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: Install dependencies
-      run: |
-        sudo apt update
-        sudo apt install -y clang cmake plantuml graphviz
+      # install dependencies
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y \
+            clang \
+            cmake \
+            plantuml \
+            graphviz \
+            libyaml-cpp-dev \
+            libcurl4-openssl-dev \
+            libedit-dev
 
-    - name: Install clang-uml
-      run: |
-        git clone https://github.com/bkryza/clang-uml.git
-        cd clang-uml
-        mkdir build
-        cd build
-        cmake ..
-        make
-        sudo make install
+      # install clang-uml
+      - name: Install clang-uml
+        run: |
+          git clone https://github.com/bkryza/clang-uml.git
+          cd clang-uml
+          mkdir build
+          cd build
+          cmake ..
+          make -j$(nproc)
+          sudo make install
 
-    - name: Configure project
-      run: |
-        mkdir build
-        cd build
-        cmake ..
+      # generate compilation database
+      - name: Configure project
+        run: |
+          mkdir -p build
+          cd build
+          cmake ..
 
-    - name: Generate sequence diagrams
-      run: clang-uml
+      # generate sequence diagrams
+      - name: Generate UML diagrams
+        run: |
+          clang-uml
 
-    - name: Render diagrams
-      run: |
-        find diagrams -name "*.puml" -exec plantuml -tsvg {} \;
+      # render diagrams
+      - name: Render diagrams
+        run: |
+          find diagrams -name "*.puml" -exec plantuml -tsvg {} \;
 
-    - name: Upload diagrams
-      uses: actions/upload-artifact@v4
-      with:
-        name: function-sequence-diagrams
-        path: diagrams
+      # upload diagrams as artifacts
+      - name: Upload diagrams
+        uses: actions/upload-artifact@v4
+        with:
+          name: sequence-diagrams
+          path: diagrams

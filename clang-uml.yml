@@ -1,26 +1,49 @@
+# clang-uml.yml
+
 compilation_database_dir: build
 output_directory: diagrams
 
 diagrams:
 
-  all_function_sequences:
-    type: sequence
+  all_functions_sequence:
 
+    type: sequence
+    title: All Function Sequence Diagrams
+
+    # recursively scan project
     glob:
       - src/**/*.cpp
+      - src/**/*.cc
+      - src/**/*.cxx
       - src/**/*.hpp
       - src/**/*.h
 
+    # generate diagram for every function
     from:
       - function: ".*"
 
-    generate_condition_statements: true
+    # show function arguments
     generate_method_arguments: true
+
+    # show return types
     generate_return_types: true
 
+    # detect if/else, loops, switch
+    generate_condition_statements: true
+
+    # inline called functions so A contains B logic
     inline_functions:
       - ".*"
 
+    # merge free functions into file participants
     combine_free_functions_into_file_participants: true
 
+    # limit recursion depth
     max_message_depth: 10
+
+    # avoid huge diagrams
+    skip_stdlib: true
+
+    # nicer diagram ordering
+    participants_order:
+      - file
