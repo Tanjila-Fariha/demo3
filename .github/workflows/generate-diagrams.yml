@@ -1,67 +1,287 @@
-name: Generate C++ Sequence Diagrams
+name: Generate Sequence Diagrams (clang-uml)
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Works on ANY C++ project.  No configuration needed beyond the 3-step setup:
+#   1. This file in  .github/workflows/
+#   2. discover_and_generate.py in  .github/scripts/
+#   3. set(CMAKE_EXPORT_COMPILE_COMMANDS ON)  in CMakeLists.txt
+#
+# Triggers whenever any C++ source file or CMakeLists.txt is pushed,
+# at any directory depth.
+# ─────────────────────────────────────────────────────────────────────────────
 on:
   push:
-    branches: [ main ]
-  pull_request:
+    branches:
+      - '**'
+    paths:
+      - '**.cpp'
+      - '**.cc'
+      - '**.cxx'
+      - '**.hpp'
+      - '**.h'
+      - '**/CMakeLists.txt'
+
+# Cancel a running job if a newer push arrives on the same branch
+concurrency:
+  group: diagrams-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-
-  build-sequence-diagrams:
-
-    runs-on: ubuntu-latest
+  generate-diagrams:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write     # required to commit diagrams back to the branch
 
     steps:
-
-      - name: Checkout repository
+      # ── 1. Checkout ──────────────────────────────────────────────────────────
+      - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Install dependencies
-        run: |
-          sudo apt update
-          sudo apt install -y \
-            clang \
-            clang-17 \
-            libclang-17-dev \
-            llvm-17-dev \
-            cmake \
-            plantuml \
-            graphviz \
-            libyaml-cpp-dev \
-            libcurl4-openssl-dev \
-            libedit-dev
-
-      # install clang-uml
-      - name: Install clang-uml
-        run: |
-          git clone https://github.com/bkryza/clang-uml.git
-          cd clang-uml
-          mkdir build
-          cd build
-          cmake ..
-          make -j$(nproc)
-          sudo make install
-
-      # generate compilation database
-      - name: Configure project
-        run: |
-          mkdir -p build
-          cd build
-          cmake ..
-
-      # generate sequence diagrams
-      - name: Generate UML diagrams
-        run: |
-          clang-uml
-
-      # render diagrams
-      - name: Render diagrams
-        run: |
-          find diagrams -name "*.puml" -exec plantuml -tsvg {} \;
-
-      # upload diagrams as artifacts
-      - name: Upload diagrams
-        uses: actions/upload-artifact@v4
         with:
-          name: sequence-diagrams
-          path: diagrams
+          fetch-depth: 0    # full history needed for source-link generation
+
+      # ── 2. Install tools ──────────────────────────────────────────────────────
+      #
+      #  clang-uml   official Ubuntu PPA — parses the C++ AST and emits .puml
+      #  cmake       generates compile_commands.json from CMakeLists.txt
+      #  ninja       fast build backend used with cmake
+      #  java (jre)  runs the PlantUML .jar
+      #  graphviz    PlantUML layout engine
+      #  python3     runs discover_and_generate.py
+      #
+      - name: Install tools
+        run: |
+          sudo add-apt-repository -y ppa:bkryza/clang-uml
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            clang-uml \
+            cmake \
+            ninja-build \
+            default-jre-headless \
+            graphviz \
+            python3
+          echo "clang-uml $(clang-uml --version 2>&1 | head -1)"
+
+      # ── 3. Download PlantUML jar ──────────────────────────────────────────────
+      - name: Download PlantUML
+        run: |
+          curl -sSL \
+            https://github.com/plantuml/plantuml/releases/latest/download/plantuml.jar \
+            -o /usr/local/bin/plantuml.jar
+
+      # ── 4. Generate compile_commands.json via CMake ───────────────────────────
+      #
+      #  CMAKE_EXPORT_COMPILE_COMMANDS=ON  — writes build/compile_commands.json
+      #  This file is the single source of truth that clang-uml uses to know:
+      #    • every .cpp file that belongs to the project
+      #    • every include path and compiler flag
+      #
+      #  If your project uses Meson instead of CMake, replace this step with:
+      #      meson setup build
+      #  Meson writes compile_commands.json automatically.
+      #
+      #  If your project uses Make or any other build system, use Bear:
+      #      sudo apt-get install bear
+      #      bear -- make
+      #
+      - name: Configure CMake → compile_commands.json
+        run: |
+          cmake -S . -B build \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+          ENTRY_COUNT=$(python3 -c \
+            "import json; print(len(json.load(open('build/compile_commands.json'))))")
+          echo "compile_commands.json: $ENTRY_COUNT translation unit(s)"
+
+      # ── 5. Auto-discover namespaces + methods, write per-method configs ───────
+      #
+      #  discover_and_generate.py runs 5 internal stages:
+      #
+      #  [1] Reads compile_commands.json to find every compiled source file,
+      #      no matter how deeply nested in the project tree.
+      #
+      #  [2] Recursively scans those source files with a regex to detect the
+      #      project's own C++ namespaces automatically — no hardcoding.
+      #
+      #  [3] Computes the complete set of source directories to give
+      #      clang-uml accurate `paths` filters.
+      #
+      #  [4] Writes a probe config and runs  clang-uml --print-from  to get
+      #      every callable method in the project.
+      #
+      #  [5] Writes one small .yaml config per method into .clang-uml-generated/
+      #      and writes manifest.json listing every config path.
+      #
+      #  Optional: add  --exclude-ns SomeLib  to skip a third-party namespace.
+      #  Optional: add  --min-calls 2         to skip trivial one-liner methods.
+      #
+      - name: Discover methods → write per-method configs
+        run: |
+          mkdir -p docs/diagrams/puml .clang-uml-generated
+
+          python3 .github/scripts/discover_and_generate.py \
+            --build-dir build \
+            --out-dir   docs/diagrams/puml \
+            --cfg-dir   .clang-uml-generated
+
+          METHOD_COUNT=$(python3 -c \
+            "import json; \
+             print(len(json.load(open('.clang-uml-generated/manifest.json'))))")
+          echo "methods_found=$METHOD_COUNT" >> $GITHUB_ENV
+          echo "Methods to diagram: $METHOD_COUNT"
+
+      # ── 6. Run clang-uml — one .puml per method ───────────────────────────────
+      #
+      #  Each config targets exactly one method entry point.
+      #  clang-uml walks the full call chain from that method and emits a
+      #  .puml file that captures:
+      #    • arrows between participants  (inter-class calls)
+      #    • loop [ condition ]           (while / for / do-while / range-for)
+      #    • alt [ condition ] / opt      (if-else / if without else / switch)
+      #    • object creation messages     (new ClassName())
+      #    • return annotations           (labelled return arrows)
+      #    • notes                        (// comments above calls)
+      #
+      - name: Run clang-uml → .puml files
+        run: |
+          MANIFEST=".clang-uml-generated/manifest.json"
+          OK=0
+          SKIP=0
+
+          while IFS= read -r CFG; do
+            [ -z "$CFG" ] && continue
+            if clang-uml --config "$CFG" --no-metadata 2>/dev/null; then
+              OK=$((OK + 1))
+            else
+              SKIP=$((SKIP + 1))
+            fi
+          done < <(python3 -c \
+            "import json; [print(p) for p in json.load(open('$MANIFEST'))]")
+
+          PUML=$(find docs/diagrams/puml -name "*.puml" 2>/dev/null | wc -l)
+          echo "clang-uml: $OK ok · $SKIP skipped · $PUML .puml files total"
+          echo "puml_count=$PUML" >> $GITHUB_ENV
+
+      # ── 7. Render .puml → SVG + PNG ───────────────────────────────────────────
+      - name: Render diagrams → SVG + PNG
+        run: |
+          mkdir -p docs/diagrams/svg docs/diagrams/png
+
+          find docs/diagrams/puml -name "*.puml" | while read -r PUML; do
+            BASE=$(basename "$PUML" .puml)
+            java -jar /usr/local/bin/plantuml.jar \
+              -tsvg -o "$(pwd)/docs/diagrams/svg" "$PUML" 2>/dev/null \
+              || echo "[WARN] SVG failed: $BASE"
+            java -jar /usr/local/bin/plantuml.jar \
+              -tpng -o "$(pwd)/docs/diagrams/png" "$PUML" 2>/dev/null \
+              || echo "[WARN] PNG failed: $BASE"
+          done
+
+          SVG=$(find docs/diagrams/svg -name "*.svg" | wc -l)
+          PNG=$(find docs/diagrams/png -name "*.png" | wc -l)
+          echo "Rendered: $SVG SVG · $PNG PNG"
+
+      # ── 8. Build a searchable HTML index ─────────────────────────────────────
+      - name: Generate HTML index
+        run: |
+          python3 - <<'PYEOF'
+          import re
+          from pathlib import Path
+          import html as hl
+
+          svg_dir  = Path("docs/diagrams/svg")
+          out_path = Path("docs/diagrams/index.html")
+          svgs     = sorted(svg_dir.glob("*.svg"))
+          if not svgs:
+              print("No SVGs — skipping index"); exit(0)
+
+          cards = ""
+          for svg in svgs:
+              raw  = re.sub(r"_\d{4}$", "", svg.stem)
+              name = raw.removeprefix("seq_")
+              name = hl.escape(name.replace("__", "::").replace("_", " "))
+              cards += f"""
+              <div class="card" data-name="{name.lower()}">
+                <h3>{name}</h3>
+                <a href="svg/{svg.name}" target="_blank">
+                  <img src="svg/{svg.name}" alt="{name}" loading="lazy"/>
+                </a>
+                <div class="links">
+                  <a href="svg/{svg.name}">SVG</a>
+                  <a href="png/{svg.stem}.png">PNG</a>
+                  <a href="puml/{svg.stem}.puml">Source</a>
+                </div>
+              </div>"""
+
+          html = f"""<!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width,initial-scale=1">
+            <title>Sequence Diagrams ({len(svgs)})</title>
+            <style>
+              *{{box-sizing:border-box;margin:0;padding:0}}
+              body{{font-family:system-ui,sans-serif;background:#f0f2f5;padding:2rem;color:#222}}
+              header{{margin-bottom:1.5rem}}
+              h1{{font-size:1.4rem;color:#1a1a2e}}
+              .meta{{color:#888;font-size:.85rem;margin-top:.25rem}}
+              input{{width:100%;padding:.55rem .85rem;font-size:.9rem;
+                     border:1px solid #ccc;border-radius:7px;margin-bottom:1.5rem;outline:none}}
+              input:focus{{border-color:#0070f3;box-shadow:0 0 0 3px rgba(0,112,243,.15)}}
+              .grid{{display:grid;
+                     grid-template-columns:repeat(auto-fill,minmax(440px,1fr));gap:1.25rem}}
+              .card{{background:#fff;border-radius:10px;padding:1.1rem;
+                     box-shadow:0 1px 6px rgba(0,0,0,.09);transition:box-shadow .15s}}
+              .card:hover{{box-shadow:0 4px 14px rgba(0,0,0,.13)}}
+              .card h3{{font-size:.72rem;font-family:monospace;text-transform:uppercase;
+                        letter-spacing:.07em;color:#aaa;margin-bottom:.6rem}}
+              .card img{{width:100%;border:1px solid #eee;border-radius:5px;cursor:zoom-in}}
+              .links{{margin-top:.5rem;display:flex;gap:.75rem}}
+              .links a{{font-size:.78rem;color:#0070f3;text-decoration:none}}
+              .links a:hover{{text-decoration:underline}}
+              .hidden{{display:none!important}}
+            </style>
+          </head>
+          <body>
+            <header>
+              <h1>&#128202; Sequence Diagrams</h1>
+              <p class="meta">Auto-generated from C++ via clang-uml + PlantUML &mdash;
+                {len(svgs)} diagram(s) &mdash; updated on every push.</p>
+            </header>
+            <input type="search" placeholder="Filter by method name…"
+                   oninput="document.querySelectorAll('.card').forEach(
+                     c=>c.classList.toggle('hidden',
+                       this.value&&!c.dataset.name.includes(this.value.toLowerCase())))"/>
+            <div class="grid">{cards}
+            </div>
+          </body>
+          </html>"""
+
+          out_path.write_text(html, encoding="utf-8")
+          print(f"Index written: {out_path}  ({len(svgs)} diagram(s))")
+          PYEOF
+
+      # ── 9. Commit diagrams back to the branch ────────────────────────────────
+      - name: Commit and push diagrams
+        run: |
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name  "github-actions[bot]"
+          git add docs/diagrams/
+          if git diff --staged --quiet; then
+            echo "No diagram changes — nothing to commit."
+          else
+            N=$(git diff --staged --name-only | wc -l)
+            git commit -m "docs: auto-regenerate sequence diagrams ($N files) [skip ci]"
+            git push
+            echo "Pushed $N file(s)."
+          fi
+
+      # ── 10. Always upload as a downloadable artifact ─────────────────────────
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sequence-diagrams-${{ github.sha }}
+          path: docs/diagrams/
+          retention-days: 30
