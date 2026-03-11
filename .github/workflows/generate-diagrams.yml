@@ -124,11 +124,20 @@ jobs:
                                       os.remove(puml_file)
           EOF
 
-      - name: Deploy Diagrams
-        run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-          git add docs/diagrams/*.png docs/diagrams/methods/*.png
-          git commit -m "docs: sync all diagrams" || exit 0
-          git pull origin main --rebase
-          git push origin main
+        - name: Deploy Diagrams
+          run: |
+            git config --local user.email "action@github.com"
+            git config --local user.name "GitHub Action"
+            
+            # Use a check to see if files exist before adding, or just add the whole directory
+            # This prevents the "pathspec" error if the folder is empty
+            mkdir -p docs/diagrams/methods
+            git add docs/diagrams/*.png 2>/dev/null || true
+            git add docs/diagrams/methods/*.png 2>/dev/null || true
+            
+            # Alternatively, the most robust way:
+            # git add docs/diagrams/
+            
+            git commit -m "docs: sync all diagrams" || exit 0
+            git pull origin main --rebase
+            git push origin main
